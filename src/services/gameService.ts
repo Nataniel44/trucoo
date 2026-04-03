@@ -407,12 +407,14 @@ export const respondTruco = async (roomId: string, uid: string, quiero: boolean)
   const gameState = roomData.gameState!;
 
   if (gameState.turn !== uid || !gameState.trucoChallenger) return;
+  const playerName = roomData.players.find(p => p.uid === uid)!.name;
 
   if (quiero) {
     await updateDoc(roomRef, {
       'gameState.trucoChallenger': null,
       'gameState.turn': gameState.originalTurn || gameState.trucoChallenger,
       'gameState.originalTurn': null,
+      'gameState.actionMessage': { text: `¡${playerName} quiso el Truco!`, id: Date.now() },
       updatedAt: serverTimestamp()
     });
   } else {
@@ -447,7 +449,8 @@ export const respondTruco = async (roomId: string, uid: string, quiero: boolean)
         trucoLevel: 1,
         envidoLevel: 0,
         trucoChallenger: null,
-        originalTurn: null
+        originalTurn: null,
+        actionMessage: { text: `¡${playerName} no quiso!`, id: Date.now() }
       },
       updatedAt: serverTimestamp()
     });

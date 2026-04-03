@@ -61,7 +61,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
     }
 
     // Unique ID for this turn state
-    const stateId = `${gameState.turn}-${gameState.currentHand}-${gameState.playedCards.length}-${gameState.trucoChallenger || 'none'}-${gameState.envidoChallenger || 'none'}-${gameState.trucoLevel}-${gameState.envidoLevel}`;
+    const stateId = `${gameState.turn}-${gameState.currentHand}-${gameState.playedCards.length}-${gameState.trucoChallenger || 'none'}-${gameState.envidoChallenger || 'none'}-${gameState.trucoLevel}-${gameState.envidoLevel}-${cpuHand.filter(c => !c.played).length}`;
 
     // If we're already "thinking" about this EXACT same state, don't reset the timer!
     // This prevents the CPU from being "reset" by rapid Firestore updates that don't change the turn/game state.
@@ -189,6 +189,14 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
       return () => clearTimeout(timer);
     }
   }, [gameState.envidoWinner]);
+
+  useEffect(() => {
+    if (gameState.actionMessage) {
+      setMessage(gameState.actionMessage.text);
+      const timer = setTimeout(() => setMessage(''), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [gameState.actionMessage?.id]);
 
   const handlePlayCard = async (card: CardType) => {
     if (!isMyTurn || !!gameState.trucoChallenger || !!gameState.envidoChallenger) return;

@@ -35,6 +35,7 @@ export interface GameState {
   lastAction?: string;
   winner?: 1 | 2;
   cpuHand?: Card[];
+  actionMessage?: { text: string; id: number };
 }
 
 export interface Room {
