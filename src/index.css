@@ -1,0 +1,31 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Epilogue:wght@700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+
+@theme {
+  --font-headline: "Epilogue", sans-serif;
+  --font-body: "Plus Jakarta Sans", sans-serif;
+}
+
+@layer utilities {
+  .bg-jungle-table {
+    background-color: #29513f;
+    background-image: radial-gradient(circle at center, #35634d 0%, #193126 100%);
+    position: relative;
+    overflow: hidden;
+  }
+  .bg-jungle-table::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: url(https://lh3.googleusercontent.com/aida-public/AB6AXuA2z1GamkbXKUEgsYdY8z3aMSDv-R1u4u8nsW3trsWjFYHrZ0eeriuMwvwVR3D_ZGbKOQhUNMP2nIsPVtv1hGgzh21ID3CDrtegOeme9Rw7cTm1a2NJnYwJVeot8f4tvBi5T1zV7zHwb25rdsU5TXEtWuIvdPMLZ9awbG8Xq7iHqER0BXQiUlHyXvqcs8XDhDeQfl9qVuGe4ulVkiY0c72XhVLLnFNiObTXB5LUzgFJIlObLy3ZdgILG2Fke3gXuOubL0vGv0-taRHO);
+    opacity: 0.1;
+    pointer-events: none;
+  }
+  .tierra-roja-glow {
+    box-shadow: 0 0 60px 10px rgba(158, 44, 24, 0.15);
+  }
+  .card-shadow {
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Truco Multiplayer",
+  "description": "Un juego de Truco argentino multijugador en tiempo real con salas privadas.",
+  "requestFramePermissions": []
+}

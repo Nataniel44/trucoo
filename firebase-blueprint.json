@@ -1,0 +1,23 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "A game room for Truco.",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["waiting", "playing", "finished"] },
+        "players": { "type": "array", "items": { "type": "object" } },
+        "gameState": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["status", "players", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "A specific game room."
+    }
+  }
+}
