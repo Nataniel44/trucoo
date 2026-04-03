@@ -34,6 +34,7 @@ export interface GameState {
   originalTurn?: string; // To know where to return after a challenge chain
   lastAction?: string;
   winner?: 1 | 2;
+  cpuHand?: Card[];
 }
 
 export interface Room {

@@ -209,21 +209,25 @@ export const startGame = async (roomId: string) => {
   try {
     // Store hands in subcollection
     for (const player of playersWithCards) {
-      console.log('startGame: Setting hand for player', player.uid);
       await setDoc(doc(db, 'rooms', roomId, 'hands', player.uid), {
         hand: player.hand,
         updatedAt: serverTimestamp()
       });
-      console.log('startGame: Hand set for player', player.uid);
     }
 
-    // Update room status and players (without hands)
     const playersWithoutHands = playersWithCards.map(p => ({ ...p, hand: [] }));
-    console.log('startGame: Updating room status to playing');
+    
+    // If it's a CPU game, we ALSO store the CPU hand in the gameState so the User's client can read it
+    // to execute AI logic (bypassing possible row-level security on the hands subcollection)
+    const cpuHand = roomData.isCPU ? playersWithCards.find(p => p.uid === 'CPU_PLAYER')?.hand : null;
+
     await updateDoc(roomRef, {
       status: 'playing',
       players: playersWithoutHands,
-      gameState: initialGameState,
+      gameState: {
+        ...initialGameState,
+        cpuHand: cpuHand // Added to support AI logic visibility
+      },
       updatedAt: serverTimestamp()
     });
     console.log('startGame: Room updated successfully');
@@ -302,7 +306,8 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
 
       const newDealer = roomData.players.find(p => p.uid !== gameState.dealer)!.uid;
       const newTurn = roomData.players.find(p => p.uid !== newDealer)!.uid;
-      
+      const cpuHandForNewRound = freshPlayers.find(p => p.uid === 'CPU_PLAYER')?.hand;
+
       nextGameState = {
         ...nextGameState,
         playedCards: [],
@@ -311,7 +316,8 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
         dealer: newDealer,
         turn: newTurn,
         trucoLevel: 1,
-        envidoLevel: 0
+        envidoLevel: 0,
+        cpuHand: cpuHandForNewRound
       };
       
       try {
@@ -331,6 +337,10 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
     }
   }
   
+  if (roomData.isCPU) {
+    nextGameState.cpuHand = (uid === 'CPU_PLAYER' ? newHand : gameState.cpuHand);
+  }
+
   try {
     await updateDoc(handRef, { hand: newHand, updatedAt: serverTimestamp() });
     await updateDoc(roomRef, {
@@ -470,4 +480,34 @@ export const respondEnvido = async (roomId: string, uid: string, quiero: boolean
 
     const points = gameState.envidoLevel;
     const nextGameState = { ...gameState };
-    nextGameState.score[winn
+    nextGameState.score[winnerTeam] += points;
+    nextGameState.envidoWinner = winnerTeam;
+    nextGameState.envidoPoints = Math.max(env1, env2);
+    nextGameState.envidoChallenger = null;
+    nextGameState.turn = gameState.originalTurn || gameState.envidoChallenger;
+    nextGameState.originalTurn = null;
+
+    await updateDoc(roomRef, {
+      gameState: nextGameState,
+      updatedAt: serverTimestamp()
+    });
+  } else {
+    // Rejected: points = level - call? No, usually 1 or previous level.
+    // If it was just "Envido", it's 1 pt. 
+    // If it was "Envido-Envido", it's 2 pts.
+    // Simplifying: 1 if level <= 2, else level - last increment.
+    const winnerTeam = roomData.players.find(p => p.uid === gameState.envidoChallenger)!.team;
+    const points = gameState.envidoLevel <= 2 ? 1 : (gameState.envidoLevel - 1); // Simplification
+
+    const nextGameState = { ...gameState };
+    nextGameState.score[winnerTeam] += 1; // Conventional Truco: if rejected, caller wins 1 pt.
+    nextGameState.envidoChallenger = null;
+    nextGameState.turn = gameState.originalTurn || gameState.envidoChallenger;
+    nextGameState.originalTurn = null;
+
+    await updateDoc(roomRef, {
+      gameState: nextGameState,
+      updatedAt: serverTimestamp()
+    });
+  }
+};

@@ -33,47 +33,49 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
     return () => unsubscribe();
   }, [room.id, user?.uid]);
 
-  // Listen to CPU hand if in CPU mode
+  // Load CPU hand if in CPU mode
   useEffect(() => {
-    if (!room.isCPU) return;
-    const unsubscribe = onSnapshot(doc(db, 'rooms', room.id, 'hands', 'CPU_PLAYER'), (doc) => {
-      if (doc.exists()) {
-        setCpuHand(doc.data().hand);
-      }
-    });
-    return () => unsubscribe();
-  }, [room.id, room.isCPU]);
+    if (room.isCPU && gameState.cpuHand) {
+      setCpuHand(gameState.cpuHand);
+    }
+  }, [room.isCPU, gameState.cpuHand]);
 
-  // Ref to track the specific state of the turn the CPU is responding to
-  const cpuProcessingState = React.useRef<string | null>(null);
+  // Track the move timeout and the state ID it's for
+  const cpuTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const lastCpuStateId = React.useRef<string | null>(null);
 
-  // CPU Move Logic (Robust & Smarter)
+  // CPU Move Logic (Ultra-Robust)
   useEffect(() => {
-    // Basic safety checks
     const canCpuMove = room.isCPU && 
                       gameState.turn === 'CPU_PLAYER' && 
                       room.status === 'playing' && 
                       !gameState.winner;
     
     if (!canCpuMove) {
-      cpuProcessingState.current = null;
+      if (cpuTimeoutRef.current) {
+        clearTimeout(cpuTimeoutRef.current);
+        cpuTimeoutRef.current = null;
+      }
+      lastCpuStateId.current = null;
       return;
     }
 
-    // Create a unique identifier for this specific game state
-    // If any of these change, it's a "new" situation for the CPU
-    const stateId = `${gameState.currentHand}-${gameState.playedCards.length}-${gameState.trucoChallenger || 'none'}-${gameState.envidoChallenger || 'none'}-${gameState.trucoLevel}-${gameState.envidoLevel}`;
+    // Unique ID for this turn state
+    const stateId = `${gameState.turn}-${gameState.currentHand}-${gameState.playedCards.length}-${gameState.trucoChallenger || 'none'}-${gameState.envidoChallenger || 'none'}-${gameState.trucoLevel}-${gameState.envidoLevel}`;
 
-    // Prevent re-triggering for the same state
-    if (cpuProcessingState.current === stateId) return;
-    cpuProcessingState.current = stateId;
+    // If we're already "thinking" about this EXACT same state, don't reset the timer!
+    // This prevents the CPU from being "reset" by rapid Firestore updates that don't change the turn/game state.
+    if (lastCpuStateId.current === stateId) return;
 
-    const timer = setTimeout(async () => {
-      // Re-verify it's still our turn and the state is still the same
-      if (cpuProcessingState.current !== stateId || gameState.turn !== 'CPU_PLAYER') return;
+    // A truly new state! Clear any old timer and start fresh.
+    if (cpuTimeoutRef.current) clearTimeout(cpuTimeoutRef.current);
+    lastCpuStateId.current = stateId;
+
+    cpuTimeoutRef.current = setTimeout(async () => {
+      // Final sanity check before calling Firestore
+      if (lastCpuStateId.current !== stateId || gameState.turn !== 'CPU_PLAYER') return;
 
       try {
-        // 1. Respond to challenges
         const cpuIsTrucoChallenged = !!gameState.trucoChallenger && gameState.trucoChallenger !== 'CPU_PLAYER';
         const cpuIsEnvidoChallenged = !!gameState.envidoChallenger && gameState.envidoChallenger !== 'CPU_PLAYER';
 
@@ -95,7 +97,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
         const availableCards = cpuHand.filter(c => !c.played);
         if (availableCards.length === 0) return;
 
-        // 2. Decide if calling something before playing
+        // Decide if calling before playing
         if (gameState.currentHand === 1 && gameState.envidoLevel === 0 && !gameState.envidoChallenger) {
           const envidoPoints = calculateEnvido(cpuHand);
           if (envidoPoints >= 28 && Math.random() > 0.4) {
@@ -112,12 +114,10 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
           }
         }
 
-        // 3. Play a card
         const currentHandCards = gameState.playedCards.filter(p => p.handIndex === gameState.currentHand);
         const opponentCard = currentHandCards.find(p => p.uid !== 'CPU_PLAYER')?.card;
 
         let cardToPlay: CardType;
-
         if (opponentCard) {
           const winningCards = availableCards.filter(c => c.value > opponentCard.value).sort((a, b) => a.value - b.value);
           cardToPlay = winningCards.length > 0 ? winningCards[0] : availableCards.sort((a, b) => a.value - b.value)[0];
@@ -132,12 +132,22 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
         await playCard(room.id, 'CPU_PLAYER', cardToPlay);
       } catch (err) {
         console.error("CPU Move Error:", err);
-        cpuProcessingState.current = null;
+        lastCpuStateId.current = null; // Re-allow on next pass
       }
-    }, 1200);
+    }, 1500);
 
-    return () => clearTimeout(timer);
+    return () => {
+      // Memory safety: the specific logic at the start of the effect 
+      // handles clearing old timers when the state actually changes.
+    };
   }, [gameState.turn, gameState.currentHand, gameState.playedCards.length, gameState.trucoChallenger, gameState.envidoChallenger, gameState.trucoLevel, gameState.envidoLevel, room.status, gameState.winner, cpuHand]);
+
+  // Handle unmount specifically
+  useEffect(() => {
+    return () => {
+      if (cpuTimeoutRef.current) clearTimeout(cpuTimeoutRef.current);
+    };
+  }, []);
 
   const isMyTurn = gameState.turn === user?.uid;
   const isTrucoChallenged = gameState.trucoChallenger && gameState.trucoChallenger !== user?.uid;
@@ -181,23 +191,26 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
   }, [gameState.envidoWinner]);
 
   const handlePlayCard = async (card: CardType) => {
-    if (!isMyTurn) return;
+    if (!isMyTurn || !!gameState.trucoChallenger || !!gameState.envidoChallenger) return;
     await playCard(room.id, user!.uid, card);
   };
 
   const copyRoomId = () => {
     navigator.clipboard.writeText(room.id);
-    alert('Room ID copied to clipboard!');
+    alert('ID de sala copiado!');
   };
 
   const handleTruco = async () => {
-    if (!isMyTurn || gameState.trucoChallenger) return;
+    // Can call if it's my turn OR I'm being challenged (Re-truco)
+    const isOpponentChallenged = gameState.trucoChallenger && gameState.trucoChallenger !== user?.uid;
+    if (!isMyTurn && !isOpponentChallenged) return;
+    if (gameState.trucoLevel >= 4) return;
     await callTruco(room.id, user!.uid);
   };
 
-  const handleEnvido = async () => {
-    if (!isMyTurn || gameState.envidoChallenger || gameState.currentHand !== 1) return;
-    await callEnvido(room.id, user!.uid);
+  const handleEnvido = async (type: 'envido' | 'real' | 'falta' = 'envido') => {
+    if (gameState.currentHand !== 1) return;
+    await callEnvido(room.id, user!.uid, type);
   };
 
   const handleRespondTruco = async (quiero: boolean) => {
@@ -206,6 +219,104 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
 
   const handleRespondEnvido = async (quiero: boolean) => {
     await respondEnvido(room.id, user!.uid, quiero);
+  };
+
+  // Render challenge modals
+  const renderChallenges = () => {
+    if (!isMyTurn) return null;
+
+    if (isTrucoChallenged) {
+      const trucoStakes: Record<number, string> = { 2: 'Truco', 3: 'Re-Truco', 4: 'Vale Cuatro' };
+      const currentLabel = trucoStakes[gameState.trucoLevel] || 'Truco';
+      const nextLabel = trucoStakes[gameState.trucoLevel + 1];
+
+      return (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-stone-900 border-2 border-orange-200/20 p-8 rounded-3xl text-center shadow-2xl max-w-sm w-full"
+          >
+            <Gavel className="mx-auto mb-4 text-orange-200" size={48} />
+            <h2 className="text-2xl font-black text-white mb-2 uppercase tracking-tighter">¡Te cantaron {currentLabel}!</h2>
+            <p className="text-orange-200/60 text-sm mb-8 font-bold tracking-widest uppercase">¿Qué vas a hacer?</p>
+            
+            <div className="grid grid-cols-1 gap-3">
+              <button 
+                onClick={() => handleRespondTruco(true)}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl shadow-lg shadow-emerald-900/20 uppercase tracking-widest transition-all"
+              >
+                Quiero
+              </button>
+              
+              {nextLabel && (
+                <button 
+                  onClick={handleTruco}
+                  className="w-full py-4 bg-orange-600 hover:bg-orange-500 text-white font-black rounded-2xl shadow-lg shadow-orange-900/20 uppercase tracking-widest transition-all"
+                >
+                  {nextLabel}
+                </button>
+              )}
+              
+              <button 
+                onClick={() => handleRespondTruco(false)}
+                className="w-full py-4 bg-stone-800 hover:bg-stone-700 text-white/70 font-black rounded-2xl uppercase tracking-widest transition-all"
+              >
+                No Quiero
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      );
+    }
+
+    if (isEnvidoChallenged) {
+      return (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-stone-900 border-2 border-orange-200/20 p-8 rounded-3xl text-center shadow-2xl max-w-sm w-full"
+          >
+            <Gauge className="mx-auto mb-4 text-orange-200" size={48} />
+            <h2 className="text-2xl font-black text-white mb-2 uppercase tracking-tighter">¡Te cantaron Envido!</h2>
+            <p className="text-orange-200/60 text-sm mb-8 font-bold tracking-widest uppercase">Tus puntos: {calculateEnvido(myHand)}</p>
+            
+            <div className="grid grid-cols-1 gap-3">
+              <button 
+                onClick={() => handleRespondEnvido(true)}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl shadow-lg shadow-emerald-900/20 uppercase tracking-widest transition-all"
+              >
+                Quiero
+              </button>
+              
+              <button 
+                onClick={() => handleEnvido('envido')}
+                className="w-full py-4 bg-orange-600 hover:bg-orange-500 text-white font-black rounded-2xl shadow-lg shadow-orange-900/20 uppercase tracking-widest transition-all"
+              >
+                Envido
+              </button>
+
+              <button 
+                onClick={() => handleEnvido('real')}
+                className="w-full py-4 bg-orange-700 hover:bg-orange-600 text-white font-black rounded-2xl shadow-lg shadow-orange-950/20 uppercase tracking-widest transition-all"
+              >
+                Real Envido
+              </button>
+              
+              <button 
+                onClick={() => handleRespondEnvido(false)}
+                className="w-full py-4 bg-stone-800 hover:bg-stone-700 text-white/70 font-black rounded-2xl uppercase tracking-widest transition-all"
+              >
+                No Quiero
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      );
+    }
+
+    return null;
   };
 
   if (room.status === 'finished') {
@@ -407,25 +518,28 @@ export const GameBoard: React.FC<GameBoardProps> = ({ room, onLeave }) => {
         </div>
       </main >
 
+      {/* Challenge Modals */}
+      {renderChallenges()}
+
       {/* Action Buttons */}
-      < div className="fixed right-8 bottom-32 flex flex-col gap-3 z-40" >
+      <div className="fixed right-8 bottom-32 flex flex-col gap-3 z-40">
         <button
           onClick={handleTruco}
-          disabled={!isMyTurn || !!gameState.trucoChallenger || gameState.trucoLevel >= 4}
-          className="w-20 h-20 rounded-full bg-primary-container text-white shadow-xl flex flex-col items-center justify-center font-black font-headline text-xs uppercase transition-all hover:scale-110 active:scale-95 disabled:opacity-50 disabled:grayscale"
+          disabled={!isMyTurn || !!gameState.trucoChallenger || gameState.trucoLevel >= 4 || !!gameState.envidoChallenger}
+          className="w-20 h-20 rounded-full bg-stone-900 border-2 border-orange-200/20 text-orange-200 shadow-xl flex flex-col items-center justify-center font-black font-headline text-[10px] uppercase transition-all hover:scale-110 active:scale-95 disabled:opacity-30 disabled:grayscale"
         >
-          <Gavel size={24} />
-          Truco
+          <Gavel size={24} className="mb-1" />
+          {gameState.trucoLevel === 1 ? 'Truco' : gameState.trucoLevel === 2 ? 'Re-Truco' : 'Vale 4'}
         </button>
         <button
-          onClick={handleEnvido}
-          disabled={!isMyTurn || !!gameState.envidoChallenger || gameState.currentHand !== 1}
-          className="w-20 h-20 rounded-full bg-tertiary text-on-tertiary shadow-xl flex flex-col items-center justify-center font-black font-headline text-xs uppercase transition-all hover:scale-110 active:scale-95 disabled:opacity-50 disabled:grayscale"
+          onClick={() => handleEnvido('envido')}
+          disabled={!isMyTurn || !!gameState.envidoChallenger || gameState.currentHand !== 1 || !!gameState.trucoChallenger || gameState.envidoLevel > 0}
+          className="w-20 h-20 rounded-full bg-stone-900 border-2 border-orange-200/20 text-orange-200 shadow-xl flex flex-col items-center justify-center font-black font-headline text-[10px] uppercase transition-all hover:scale-110 active:scale-95 disabled:opacity-30 disabled:grayscale"
         >
-          <Gauge size={24} />
+          <Gauge size={24} className="mb-1" />
           Envido
         </button>
-      </div >
-    </div >
+      </div>
+    </div>
   );
 };
