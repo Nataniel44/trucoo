@@ -87,11 +87,12 @@ export default function App() {
       if (doc.exists()) {
         const data = doc.data() as Room;
         setRoom({ ...data, id: doc.id });
+        console.log('App: Room update - status:', data.status, 'players:', data.players.length, 'maxPlayers:', data.maxPlayers, 'isCPU:', data.isCPU);
 
-        if (data.status === 'waiting' && data.players.length === 2) {
+        if (data.status === 'waiting' && data.players.length === data.maxPlayers) {
           console.log('App: Room is full, checking dealer status...');
           const me = data.players.find(p => p.uid === auth.currentUser?.uid);
-          console.log('App: Current user is dealer:', me?.isDealer);
+          console.log('App: Current user:', auth.currentUser?.uid, 'isDealer:', me?.isDealer, 'player:', me);
           if (me?.isDealer) {
             console.log('App: Starting game...');
             startGame(doc.id).catch(err => {
@@ -185,33 +186,43 @@ export default function App() {
   }
 
   if (currentRoomId && room?.status === 'waiting') {
+    const maxPlayers = room.maxPlayers || 2;
+    const playersNeeded = maxPlayers - room.players.length;
+    
     return (
       <div className="min-h-screen bg-emerald-950 flex flex-col items-center justify-center p-4 text-white">
         <div className="w-full max-w-md bg-white/10 backdrop-blur-xl p-8 rounded-3xl border border-white/10 text-center">
-          <h2 className="text-2xl font-bold mb-4">Waiting for Opponent</h2>
+          <h2 className="text-2xl font-bold mb-4">
+            Waiting for Players ({room.players.length}/{maxPlayers})
+          </h2>
           <div className="bg-black/20 p-4 rounded-2xl mb-6">
             <p className="text-xs uppercase opacity-60 mb-1">Share this Room ID</p>
             <p className="text-4xl font-mono font-black tracking-widest text-emerald-400">{currentRoomId}</p>
           </div>
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 mb-6">
             {room.players.map(p => (
               <div key={p.uid} className="flex items-center gap-3 bg-white/5 p-3 rounded-xl">
                 <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center font-bold">
                   {p.name[0]}
                 </div>
-                <span className="font-medium">{p.name} {p.uid === user.uid && '(You)'}</span>
+                <span className="font-medium flex-1 text-left">{p.name} {p.uid === user.uid && '(You)'}</span>
+                <span className={`text-xs px-2 py-1 rounded ${
+                  p.team === 1 ? 'bg-emerald-600/50 text-emerald-300' : 'bg-blue-600/50 text-blue-300'
+                }`}>
+                  Equipo {p.team}
+                </span>
               </div>
             ))}
-            {room.players.length < 2 && (
-              <div className="flex items-center gap-3 bg-white/5 p-3 rounded-xl opacity-40 border-2 border-dashed border-white/10">
+            {Array.from({ length: playersNeeded }).map((_, i) => (
+              <div key={`empty-${i}`} className="flex items-center gap-3 bg-white/5 p-3 rounded-xl opacity-40 border-2 border-dashed border-white/10">
                 <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">?</div>
-                <span className="italic">Waiting for player 2...</span>
+                <span className="italic flex-1 text-left">Waiting for player...</span>
               </div>
-            )}
+            ))}
           </div>
           <button 
             onClick={() => setCurrentRoomId(null)}
-            className="mt-8 text-white/40 hover:text-white text-sm transition-colors"
+            className="mt-4 text-white/40 hover:text-white text-sm transition-colors"
           >
             Cancel and Return to Lobby
           </button>

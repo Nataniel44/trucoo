@@ -4,7 +4,7 @@ export interface Card {
   id: string;
   number: number;
   suit: CardSuit;
-  value: number; // Truco value (higher is better)
+  value: number;
   played?: boolean;
 }
 
@@ -16,25 +16,27 @@ export interface Player {
   ready: boolean;
   isDealer?: boolean;
   isCPU?: boolean;
+  wentToMazo?: boolean;
 }
 
 export interface GameState {
-  turn: string; // uid
-  dealer: string; // uid
+  turn: string;
+  turnOrder: string[];
+  dealer: string;
   score: { 1: number; 2: number };
   roundScore: { 1: number; 2: number };
-  currentHand: number; // 1, 2, 3
+  currentHand: number;
   playedCards: { uid: string; card: Card; handIndex: number }[];
-  trucoLevel: number; // 1 (none), 2 (truco), 3 (retruco), 4 (vale cuatro)
+  trucoLevel: number;
   trucoChallenger?: string;
-  envidoLevel: number; // 0 (none), 2 (envido), 4 (real envido), etc.
+  envidoLevel: number;
   envidoChallenger?: string;
   envidoWinner?: 1 | 2;
   envidoPoints?: number;
-  originalTurn?: string; // To know where to return after a challenge chain
+  originalTurn?: string;
   lastAction?: string;
   winner?: 1 | 2;
-  cpuHand?: Card[];
+  cpuHand?: Record<string, Card[]>;
   actionMessage?: { text: string; id: number };
 }
 
@@ -42,6 +44,7 @@ export interface Room {
   id: string;
   status: 'waiting' | 'playing' | 'finished';
   players: Player[];
+  maxPlayers: 2 | 4;
   gameState?: GameState;
   isCPU?: boolean;
   createdAt: any;

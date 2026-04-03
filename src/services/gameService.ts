@@ -67,7 +67,72 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
-export const createRoom = async (playerName: string) => {
+const getNextTurn = (currentUid: string, turnOrder: string[]): string => {
+  const idx = turnOrder.indexOf(currentUid);
+  return turnOrder[(idx + 1) % turnOrder.length];
+};
+
+const evaluateHand = (currentHandCards: { uid: string; card: Card }[], players: Player[], gameState: GameState): {
+  winnerTeam: 1 | 2 | null;
+  winnerUid: string | null;
+  isDraw: boolean;
+} => {
+  const maxPlayers = gameState.turnOrder.length;
+  
+  const team1Cards = currentHandCards.filter(c => {
+    const player = players.find(p => p.uid === c.uid);
+    return player?.team === 1;
+  });
+  const team2Cards = currentHandCards.filter(c => {
+    const player = players.find(p => p.uid === c.uid);
+    return player?.team === 2;
+  });
+
+  if (maxPlayers === 2) {
+    if (currentHandCards.length < 2) return { winnerTeam: null, winnerUid: null, isDraw: false };
+    
+    const card1 = currentHandCards[0];
+    const card2 = currentHandCards[1];
+    
+    if (card1.card.value > card2.card.value) {
+      const winner = players.find(p => p.uid === card1.uid);
+      return { winnerTeam: winner?.team || null, winnerUid: card1.uid, isDraw: false };
+    } else if (card2.card.value > card1.card.value) {
+      const winner = players.find(p => p.uid === card2.uid);
+      return { winnerTeam: winner?.team || null, winnerUid: card2.uid, isDraw: false };
+    } else {
+      const dealer = players.find(p => p.uid === gameState.dealer);
+      return { winnerTeam: dealer?.team || null, winnerUid: gameState.dealer, isDraw: true };
+    }
+  }
+
+  if (team1Cards.length === 0 || team2Cards.length === 0) {
+    const winningTeam = team1Cards.length > 0 ? 1 : 2;
+    const winnerCard = winningTeam === 1 ? team1Cards[0] : team2Cards[0];
+    return { winnerTeam: winningTeam, winnerUid: winnerCard.uid, isDraw: false };
+  }
+
+  const best1 = Math.max(...team1Cards.map(c => c.card.value));
+  const best2 = Math.max(...team2Cards.map(c => c.card.value));
+
+  if (best1 > best2) {
+    const winnerCard = team1Cards.find(c => c.card.value === best1)!;
+    return { winnerTeam: 1, winnerUid: winnerCard.uid, isDraw: false };
+  } else if (best2 > best1) {
+    const winnerCard = team2Cards.find(c => c.card.value === best2)!;
+    return { winnerTeam: 2, winnerUid: winnerCard.uid, isDraw: false };
+  } else {
+    const dealer = players.find(p => p.isDealer);
+    return { winnerTeam: dealer?.team || null, winnerUid: gameState.dealer, isDraw: true };
+  }
+};
+
+const isHandComplete = (currentHandCards: { uid: string; card: Card; handIndex: number }[], maxPlayers: number): boolean => {
+  const uniquePlayersInHand = new Set(currentHandCards.map(c => c.uid));
+  return uniquePlayersInHand.size === maxPlayers;
+};
+
+export const createRoom = async (playerName: string, maxPlayers: 2 | 4 = 2) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Not authenticated');
 
@@ -86,6 +151,7 @@ export const createRoom = async (playerName: string) => {
   const room: Partial<Room> = {
     status: 'waiting',
     players: [initialPlayer],
+    maxPlayers,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   };
@@ -98,7 +164,7 @@ export const createRoom = async (playerName: string) => {
   return roomId;
 };
 
-export const createCPURoom = async (playerName: string) => {
+export const createCPURoom = async (playerName: string, maxPlayers: 2 | 4 = 2) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Not authenticated');
 
@@ -114,19 +180,43 @@ export const createCPURoom = async (playerName: string) => {
     isDealer: true
   };
 
-  const cpuPlayer: Player = {
-    uid: 'CPU_PLAYER',
-    name: 'CPU (Misionero)',
+  const players: Player[] = [initialPlayer];
+
+  if (maxPlayers === 4) {
+    players.push({
+      uid: 'CPU_PLAYER_1',
+      name: 'CPU Compañero',
+      team: 1,
+      hand: [],
+      ready: true,
+      isDealer: false,
+      isCPU: true
+    });
+    players.push({
+      uid: 'CPU_PLAYER_2',
+      name: 'CPU Oponente 1',
+      team: 2,
+      hand: [],
+      ready: true,
+      isDealer: false,
+      isCPU: true
+    });
+  }
+
+  players.push({
+    uid: maxPlayers === 4 ? 'CPU_PLAYER_3' : 'CPU_PLAYER',
+    name: maxPlayers === 4 ? 'CPU Oponente 2' : 'CPU (Misionero)',
     team: 2,
     hand: [],
     ready: true,
     isDealer: false,
     isCPU: true
-  };
+  });
 
   const room: Partial<Room> = {
     status: 'waiting',
-    players: [initialPlayer, cpuPlayer],
+    players,
+    maxPlayers,
     isCPU: true,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
@@ -155,13 +245,14 @@ export const joinRoom = async (roomId: string, playerName: string) => {
   if (!roomSnap?.exists()) throw new Error('Room not found');
   const roomData = roomSnap.data() as Room;
 
-  if (roomData.players.length >= 2) throw new Error('Room full');
+  if (roomData.players.length >= roomData.maxPlayers) throw new Error('Room full');
   if (roomData.players.find(p => p.uid === user.uid)) return;
 
+  const team = roomData.players.length < 2 ? 1 : 2;
   const newPlayer: Player = {
     uid: user.uid,
     name: playerName,
-    team: 2,
+    team,
     hand: [],
     ready: false,
     isDealer: false
@@ -191,12 +282,22 @@ export const startGame = async (roomId: string) => {
 
   const playersWithCards = dealCards(roomData.players);
   console.log('startGame: Players with cards:', playersWithCards);
+
   const dealer = roomData.players.find(p => p.isDealer)?.uid || roomData.players[0].uid;
-  const turn = roomData.players.find(p => p.uid !== dealer)?.uid || roomData.players[0].uid;
-  console.log('startGame: Dealer:', dealer, 'Turn:', turn);
+  
+  const playersInOrder = [...roomData.players];
+  if (dealer !== playersInOrder[0].uid) {
+    const dealerIndex = playersInOrder.findIndex(p => p.uid === dealer);
+    playersInOrder.splice(0, 0, playersInOrder.splice(dealerIndex, 1)[0]);
+  }
+  const turnOrder = playersInOrder.map(p => p.uid);
+  
+  const firstPlayer = getNextTurn(dealer, turnOrder);
+  console.log('startGame: Dealer:', dealer, 'Turn:', firstPlayer, 'Order:', turnOrder);
 
   const initialGameState: GameState = {
-    turn,
+    turn: firstPlayer,
+    turnOrder,
     dealer,
     score: { 1: 0, 2: 0 },
     roundScore: { 1: 0, 2: 0 },
@@ -207,7 +308,6 @@ export const startGame = async (roomId: string) => {
   };
 
   try {
-    // Store hands in subcollection
     for (const player of playersWithCards) {
       await setDoc(doc(db, 'rooms', roomId, 'hands', player.uid), {
         hand: player.hand,
@@ -217,16 +317,21 @@ export const startGame = async (roomId: string) => {
 
     const playersWithoutHands = playersWithCards.map(p => ({ ...p, hand: [] }));
     
-    // If it's a CPU game, we ALSO store the CPU hand in the gameState so the User's client can read it
-    // to execute AI logic (bypassing possible row-level security on the hands subcollection)
-    const cpuHand = roomData.isCPU ? playersWithCards.find(p => p.uid === 'CPU_PLAYER')?.hand : null;
+    const cpuHands: Record<string, Card[]> = {};
+    if (roomData.isCPU) {
+      playersWithCards.forEach(p => {
+        if (p.isCPU && p.hand.length > 0) {
+          cpuHands[p.uid] = p.hand;
+        }
+      });
+    }
 
     await updateDoc(roomRef, {
       status: 'playing',
       players: playersWithoutHands,
       gameState: {
         ...initialGameState,
-        cpuHand: cpuHand // Added to support AI logic visibility
+        cpuHand: cpuHands
       },
       updatedAt: serverTimestamp()
     });
@@ -250,7 +355,9 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
 
   if (gameState.turn !== uid || gameState.trucoChallenger || gameState.envidoChallenger) return;
 
-  // Get hand from subcollection
+  const player = roomData.players.find(p => p.uid === uid);
+  if (player?.wentToMazo) return;
+
   const handRef = doc(db, 'rooms', roomId, 'hands', uid);
   const handSnap = await getDoc(handRef);
   const handData = handSnap.data() as { hand: Card[] };
@@ -258,29 +365,25 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
 
   const newPlayedCards = [...gameState.playedCards, { uid, card, handIndex: gameState.currentHand }];
   
-  let nextTurn = roomData.players.find(p => p.uid !== uid)!.uid;
-  let nextGameState = { ...gameState, playedCards: newPlayedCards, turn: nextTurn };
+  const nextTurn = getNextTurn(uid, gameState.turnOrder);
+  let nextGameState: any = { ...gameState, playedCards: newPlayedCards, turn: nextTurn };
 
   const currentHandCards = newPlayedCards.filter(p => p.handIndex === gameState.currentHand);
+  const maxPlayers = gameState.turnOrder.length;
 
-  if (currentHandCards.length === 2) {
-    const card1 = currentHandCards[0];
-    const card2 = currentHandCards[1];
+  if (isHandComplete(currentHandCards, maxPlayers)) {
+    const evaluation = evaluateHand(currentHandCards, roomData.players, gameState);
     
-    let winnerUid = '';
-    if (card1.card.value > card2.card.value) winnerUid = card1.uid;
-    else if (card2.card.value > card1.card.value) winnerUid = card2.uid;
-    else winnerUid = gameState.dealer;
-
-    const winnerPlayer = roomData.players.find(p => p.uid === winnerUid)!;
-    const team = winnerPlayer.team;
+    if (evaluation.winnerTeam) {
+      nextGameState.roundScore[evaluation.winnerTeam]++;
+    }
     
-    nextGameState.roundScore[team]++;
-    nextGameState.turn = winnerUid;
+    nextGameState.turn = evaluation.winnerUid || nextTurn;
     
     if (nextGameState.roundScore[1] === 2 || nextGameState.roundScore[2] === 2) {
       const points = nextGameState.trucoLevel;
       const roundWinnerTeam = nextGameState.roundScore[1] === 2 ? 1 : 2;
+      nextGameState.score = { ...gameState.score };
       nextGameState.score[roundWinnerTeam] += points;
       
       if (nextGameState.score[1] >= 15 || nextGameState.score[2] >= 15) {
@@ -289,6 +392,7 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
           status: 'finished',
           'gameState.winner': gameWinner,
           'gameState.score': nextGameState.score,
+          'gameState.roundScore': nextGameState.roundScore,
           updatedAt: serverTimestamp()
         });
         return;
@@ -296,49 +400,70 @@ export const playCard = async (roomId: string, uid: string, card: Card) => {
 
       const freshPlayers = dealCards(roomData.players);
       
-      // Store new hands
-      for (const player of freshPlayers) {
-        await setDoc(doc(db, 'rooms', roomId, 'hands', player.uid), {
-          hand: player.hand,
+      for (const p of freshPlayers) {
+        await setDoc(doc(db, 'rooms', roomId, 'hands', p.uid), {
+          hand: p.hand,
           updatedAt: serverTimestamp()
         });
       }
 
-      const newDealer = roomData.players.find(p => p.uid !== gameState.dealer)!.uid;
-      const newTurn = roomData.players.find(p => p.uid !== newDealer)!.uid;
-      const cpuHandForNewRound = freshPlayers.find(p => p.uid === 'CPU_PLAYER')?.hand;
-
-      nextGameState = {
-        ...nextGameState,
-        playedCards: [],
-        roundScore: { 1: 0, 2: 0 },
-        currentHand: 1,
-        dealer: newDealer,
-        turn: newTurn,
-        trucoLevel: 1,
-        envidoLevel: 0,
-        cpuHand: cpuHandForNewRound
-      };
+      const newDealer = roomData.players.find(p => p.uid !== gameState.dealer)?.uid || roomData.players[0].uid;
+      let newTurnOrder = [...gameState.turnOrder];
+      const dealerIdx = newTurnOrder.indexOf(gameState.dealer);
+      newTurnOrder.splice(0, 0, newTurnOrder.splice(dealerIdx, 1)[0]);
       
-      try {
-        await updateDoc(roomRef, {
-          players: freshPlayers.map(p => ({ ...p, hand: [] })),
-          gameState: nextGameState,
-          updatedAt: serverTimestamp()
+      const newDealerIdx = newTurnOrder.indexOf(newDealer);
+      newTurnOrder.splice(0, 0, newTurnOrder.splice(newDealerIdx, 1)[0]);
+
+      const newFirstPlayer = getNextTurn(newDealer, newTurnOrder);
+
+      const cpuHands: Record<string, Card[]> = {};
+      if (roomData.isCPU) {
+        freshPlayers.forEach(p => {
+          if (p.isCPU && p.hand.length > 0) {
+            cpuHands[p.uid] = p.hand;
+          }
         });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
       }
+
+      await updateDoc(roomRef, {
+        players: freshPlayers.map(p => ({ ...p, hand: [] })),
+        gameState: {
+          ...nextGameState,
+          playedCards: [],
+          roundScore: { 1: 0, 2: 0 },
+          currentHand: 1,
+          dealer: newDealer,
+          turn: newFirstPlayer,
+          turnOrder: newTurnOrder,
+          trucoLevel: 1,
+          envidoLevel: 0,
+          cpuHand: cpuHands
+        },
+        updatedAt: serverTimestamp()
+      });
       return;
     } else {
-      // Not the end of the round, just current hand finished.
-      // We keep playedCards as is (it now contains history) and increment currentHand
-      nextGameState.currentHand++;
+      nextGameState.currentHand = gameState.currentHand + 1;
     }
   }
   
   if (roomData.isCPU) {
-    nextGameState.cpuHand = (uid === 'CPU_PLAYER' ? newHand : gameState.cpuHand);
+    const cpuHands: Record<string, Card[]> = {};
+    roomData.players.forEach(p => {
+      if (p.isCPU && gameState.cpuHand && gameState.cpuHand[p.uid]) {
+        cpuHands[p.uid] = gameState.cpuHand[p.uid];
+      }
+    });
+    
+    const player = roomData.players.find(p => p.uid === uid);
+    if (player?.isCPU) {
+      cpuHands[uid] = newHand;
+    }
+    
+    if (Object.keys(cpuHands).length > 0) {
+      nextGameState.cpuHand = cpuHands;
+    }
   }
 
   try {
@@ -358,19 +483,24 @@ export const callTruco = async (roomId: string, uid: string) => {
   const roomData = roomSnap.data() as Room;
   const gameState = roomData.gameState!;
 
-  // Allow calling if it's your turn OR you're the one being challenged (for Re-truco)
   const isOpponentChallenged = gameState.trucoChallenger && gameState.trucoChallenger !== uid;
   if (!isOpponentChallenged && gameState.turn !== uid) return;
   if (gameState.trucoLevel >= 4) return;
 
   const nextLevel = gameState.trucoLevel === 1 ? 2 : gameState.trucoLevel + 1;
-  const opponent = roomData.players.find(p => p.uid !== uid)!.uid;
+  
+  const currentTurnIdx = gameState.turnOrder.indexOf(uid);
+  let opponentIdx = (currentTurnIdx + 1) % gameState.turnOrder.length;
+  while (gameState.turnOrder[opponentIdx] === uid || roomData.players.find(p => p.uid === gameState.turnOrder[opponentIdx])?.wentToMazo) {
+    opponentIdx = (opponentIdx + 1) % gameState.turnOrder.length;
+    if (opponentIdx === currentTurnIdx) break;
+  }
+  const opponent = gameState.turnOrder[opponentIdx];
 
   await updateDoc(roomRef, {
     'gameState.trucoLevel': nextLevel,
     'gameState.trucoChallenger': uid,
     'gameState.turn': opponent,
-    // Only set originalTurn if it's the very first call in the chain
     'gameState.originalTurn': gameState.trucoLevel === 1 ? gameState.turn : (gameState.originalTurn || gameState.turn),
     updatedAt: serverTimestamp()
   });
@@ -384,12 +514,19 @@ export const callEnvido = async (roomId: string, uid: string, type: 'envido' | '
 
   if (gameState.currentHand !== 1) return;
   
-  const opponent = roomData.players.find(p => p.uid !== uid)!.uid;
+  const currentTurnIdx = gameState.turnOrder.indexOf(uid);
+  let opponentIdx = (currentTurnIdx + 1) % gameState.turnOrder.length;
+  while (gameState.turnOrder[opponentIdx] === uid || roomData.players.find(p => p.uid === gameState.turnOrder[opponentIdx])?.wentToMazo) {
+    opponentIdx = (opponentIdx + 1) % gameState.turnOrder.length;
+    if (opponentIdx === currentTurnIdx) break;
+  }
+  const opponent = gameState.turnOrder[opponentIdx];
+
   let nextLevel = gameState.envidoLevel;
   
   if (type === 'envido') nextLevel += 2;
   else if (type === 'real') nextLevel += 3;
-  else if (type === 'falta') nextLevel = 30; // Max points for now
+  else if (type === 'falta') nextLevel = 30;
 
   await updateDoc(roomRef, {
     'gameState.envidoLevel': nextLevel,
@@ -414,47 +551,87 @@ export const respondTruco = async (roomId: string, uid: string, quiero: boolean)
       'gameState.trucoChallenger': null,
       'gameState.turn': gameState.originalTurn || gameState.trucoChallenger,
       'gameState.originalTurn': null,
-      'gameState.actionMessage': { text: `¡${playerName} quiso el Truco!`, id: Date.now() },
+      'gameState.actionMessage': { text: `${playerName} quiso el Truco!`, id: Date.now() },
       updatedAt: serverTimestamp()
     });
   } else {
-    // No quiero: challenger wins round with current points - 1 (min 1)
     const winnerTeam = roomData.players.find(p => p.uid === gameState.trucoChallenger)!.team;
     const points = Math.max(1, gameState.trucoLevel - 1);
     
-    const nextGameState = { ...gameState };
+    const nextGameState: any = { ...gameState };
+    nextGameState.score = { ...gameState.score };
     nextGameState.score[winnerTeam] += points;
+    nextGameState.actionMessage = { text: `${playerName} no quiso!`, id: Date.now() };
     
-    // Reset round
-    const freshPlayers = dealCards(roomData.players);
-    for (const player of freshPlayers) {
-      await setDoc(doc(db, 'rooms', roomId, 'hands', player.uid), {
-        hand: player.hand,
-        updatedAt: serverTimestamp()
-      });
-    }
+    await updateRoundEnd(roomId, roomData, nextGameState);
+  }
+};
 
-    const newDealer = roomData.players.find(p => p.uid !== gameState.dealer)!.uid;
-    const newTurn = roomData.players.find(p => p.uid !== newDealer)!.uid;
-
+const updateRoundEnd = async (roomId: string, roomData: Room, nextGameState: any) => {
+  const roomRef = doc(db, 'rooms', roomId);
+  
+  if (nextGameState.score[1] >= 15 || nextGameState.score[2] >= 15) {
+    const gameWinner = nextGameState.score[1] >= 15 ? 1 : 2;
     await updateDoc(roomRef, {
-      players: freshPlayers.map(p => ({ ...p, hand: [] })),
-      gameState: {
-        ...nextGameState,
-        playedCards: [],
-        roundScore: { 1: 0, 2: 0 },
-        currentHand: 1,
-        dealer: newDealer,
-        turn: newTurn,
-        trucoLevel: 1,
-        envidoLevel: 0,
-        trucoChallenger: null,
-        originalTurn: null,
-        actionMessage: { text: `¡${playerName} no quiso!`, id: Date.now() }
-      },
+      status: 'finished',
+      'gameState.winner': gameWinner,
+      'gameState.score': nextGameState.score,
+      'gameState.roundScore': nextGameState.roundScore,
+      updatedAt: serverTimestamp()
+    });
+    return;
+  }
+
+  const freshPlayers = dealCards(roomData.players);
+  for (const p of freshPlayers) {
+    await setDoc(doc(db, 'rooms', roomId, 'hands', p.uid), {
+      hand: p.hand,
       updatedAt: serverTimestamp()
     });
   }
+
+  const newDealer = roomData.players.find(p => p.uid !== gameState?.dealer)?.uid || roomData.players[0].uid;
+  let newTurnOrder = [...(gameState?.turnOrder || roomData.players.map(p => p.uid))];
+  const dealerIdx = newTurnOrder.indexOf(gameState?.dealer || roomData.players[0].uid);
+  if (dealerIdx > 0) {
+    newTurnOrder.splice(0, 0, newTurnOrder.splice(dealerIdx, 1)[0]);
+  }
+  
+  const newDealerIdx = newTurnOrder.indexOf(newDealer);
+  if (newDealerIdx > 0) {
+    newTurnOrder.splice(0, 0, newTurnOrder.splice(newDealerIdx, 1)[0]);
+  }
+
+  const newFirstPlayer = getNextTurn(newDealer, newTurnOrder);
+
+  const cpuHands: Record<string, Card[]> = {};
+  if (roomData.isCPU) {
+    freshPlayers.forEach(p => {
+      if (p.isCPU && p.hand.length > 0) {
+        cpuHands[p.uid] = p.hand;
+      }
+    });
+  }
+
+  await updateDoc(roomRef, {
+    players: freshPlayers.map(p => ({ ...p, hand: [] })),
+    gameState: {
+      ...nextGameState,
+      playedCards: [],
+      roundScore: { 1: 0, 2: 0 },
+      currentHand: 1,
+      dealer: newDealer,
+      turn: newFirstPlayer,
+      turnOrder: newTurnOrder,
+      trucoLevel: 1,
+      envidoLevel: 0,
+      trucoChallenger: null,
+      envidoChallenger: null,
+      originalTurn: null,
+      cpuHand: cpuHands
+    },
+    updatedAt: serverTimestamp()
+  });
 };
 
 export const respondEnvido = async (roomId: string, uid: string, quiero: boolean) => {
@@ -466,26 +643,44 @@ export const respondEnvido = async (roomId: string, uid: string, quiero: boolean
   if (gameState.turn !== uid || !gameState.envidoChallenger) return;
 
   if (quiero) {
-    const p1 = roomData.players[0];
-    const p2 = roomData.players[1];
-    const h1Snap = await getDoc(doc(db, 'rooms', roomId, 'hands', p1.uid));
-    const h2Snap = await getDoc(doc(db, 'rooms', roomId, 'hands', p2.uid));
-    const h1 = h1Snap.data() as { hand: Card[] };
-    const h2 = h2Snap.data() as { hand: Card[] };
+    const env1 = calculateEnvido(roomData.players.filter(p => p.team === 1).flatMap(p => {
+      return (roomData.gameState?.cpuHand?.[p.uid] || []);
+    }));
+    const env2 = calculateEnvido(roomData.players.filter(p => p.team === 2).flatMap(p => {
+      return (roomData.gameState?.cpuHand?.[p.uid] || []);
+    }));
 
-    const env1 = calculateEnvido(h1.hand);
-    const env2 = calculateEnvido(h2.hand);
+    const team1Players = roomData.players.filter(p => p.team === 1);
+    const team2Players = roomData.players.filter(p => p.team === 2);
+    
+    let team1Envido = 0;
+    let team2Envido = 0;
+
+    for (const p of team1Players) {
+      const handSnap = await getDoc(doc(db, 'rooms', roomId, 'hands', p.uid));
+      const handData = handSnap.data() as { hand: Card[] };
+      const env = calculateEnvido(handData.hand);
+      if (env > team1Envido) team1Envido = env;
+    }
+
+    for (const p of team2Players) {
+      const handSnap = await getDoc(doc(db, 'rooms', roomId, 'hands', p.uid));
+      const handData = handSnap.data() as { hand: Card[] };
+      const env = calculateEnvido(handData.hand);
+      if (env > team2Envido) team2Envido = env;
+    }
     
     let winnerTeam: 1 | 2;
-    if (env1 > env2) winnerTeam = 1;
-    else if (env2 > env1) winnerTeam = 2;
-    else winnerTeam = roomData.players.find(p => p.uid !== gameState.dealer)!.team;
+    if (team1Envido > team2Envido) winnerTeam = 1;
+    else if (team2Envido > team1Envido) winnerTeam = 2;
+    else winnerTeam = roomData.players.find(p => p.uid !== gameState.dealer)?.team as 1 | 2;
 
     const points = gameState.envidoLevel;
     const nextGameState = { ...gameState };
+    nextGameState.score = { ...gameState.score };
     nextGameState.score[winnerTeam] += points;
     nextGameState.envidoWinner = winnerTeam;
-    nextGameState.envidoPoints = Math.max(env1, env2);
+    nextGameState.envidoPoints = Math.max(team1Envido, team2Envido);
     nextGameState.envidoChallenger = null;
     nextGameState.turn = gameState.originalTurn || gameState.envidoChallenger;
     nextGameState.originalTurn = null;
@@ -495,15 +690,10 @@ export const respondEnvido = async (roomId: string, uid: string, quiero: boolean
       updatedAt: serverTimestamp()
     });
   } else {
-    // Rejected: points = level - call? No, usually 1 or previous level.
-    // If it was just "Envido", it's 1 pt. 
-    // If it was "Envido-Envido", it's 2 pts.
-    // Simplifying: 1 if level <= 2, else level - last increment.
     const winnerTeam = roomData.players.find(p => p.uid === gameState.envidoChallenger)!.team;
-    const points = gameState.envidoLevel <= 2 ? 1 : (gameState.envidoLevel - 1); // Simplification
-
     const nextGameState = { ...gameState };
-    nextGameState.score[winnerTeam] += 1; // Conventional Truco: if rejected, caller wins 1 pt.
+    nextGameState.score = { ...gameState.score };
+    nextGameState.score[winnerTeam] += 1;
     nextGameState.envidoChallenger = null;
     nextGameState.turn = gameState.originalTurn || gameState.envidoChallenger;
     nextGameState.originalTurn = null;
@@ -512,5 +702,59 @@ export const respondEnvido = async (roomId: string, uid: string, quiero: boolean
       gameState: nextGameState,
       updatedAt: serverTimestamp()
     });
+  }
+};
+
+export const irAlMazo = async (roomId: string, uid: string) => {
+  const roomRef = doc(db, 'rooms', roomId);
+  let roomSnap;
+  try {
+    roomSnap = await getDoc(roomRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `rooms/${roomId}`);
+  }
+  const roomData = roomSnap?.data() as Room;
+  const gameState = roomData.gameState!;
+
+  if (gameState.turn !== uid) return;
+
+  const player = roomData.players.find(p => p.uid === uid)!;
+  const opponentTeam = player.team === 1 ? 2 : 1;
+  const winnerTeam = opponentTeam;
+
+  const nextGameState: any = {
+    ...gameState,
+    turn: getNextTurn(uid, gameState.turnOrder),
+    actionMessage: { text: `${player.name} se fue al mazo`, id: Date.now() }
+  };
+
+  const currentHandCards = gameState.playedCards.filter(p => p.handIndex === gameState.currentHand);
+
+  if (isHandComplete(currentHandCards, gameState.turnOrder.length)) {
+    nextGameState.roundScore = { ...gameState.roundScore };
+    nextGameState.roundScore[winnerTeam]++;
+  } else {
+    nextGameState.roundScore = { ...gameState.roundScore, [winnerTeam]: gameState.roundScore[winnerTeam] + 1 };
+  }
+
+  if (nextGameState.roundScore[1] === 2 || nextGameState.roundScore[2] === 2) {
+    const points = nextGameState.trucoLevel;
+    const roundWinnerTeam = nextGameState.roundScore[1] === 2 ? 1 : 2;
+    nextGameState.score = { ...gameState.score };
+    nextGameState.score[roundWinnerTeam] += points;
+    
+    await updateRoundEnd(roomId, roomData, nextGameState);
+    return;
+  }
+
+  nextGameState.currentHand = gameState.currentHand + 1;
+
+  try {
+    await updateDoc(roomRef, {
+      gameState: nextGameState,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
   }
 };

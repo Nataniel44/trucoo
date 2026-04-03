@@ -2,21 +2,17 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Verifica si el usuario actual es uno de los jugadores
-    // Usamos índices fijos pero con validación de existencia para evitar errores
     function isPlayer(roomData) {
       return isAuthenticated() && 
              (
                (roomData.players.size() > 0 && roomData.players[0].uid == request.auth.uid) || 
-               (roomData.players.size() > 1 && roomData.players[1].uid == request.auth.uid)
+               (roomData.players.size() > 1 && roomData.players[1].uid == request.auth.uid) ||
+               (roomData.players.size() > 2 && roomData.players[2].uid == request.auth.uid) ||
+               (roomData.players.size() > 3 && roomData.players[3].uid == request.auth.uid)
              );
     }
 
@@ -24,40 +20,27 @@ service cloud.firestore {
       return data.status in ['waiting', 'playing', 'finished'] &&
              data.players is list &&
              data.players.size() >= 1 &&
-             data.players.size() <= 2;
+             data.players.size() <= 4 &&
+             data.maxPlayers in [2, 4];
     }
-
-    // ===============================================================
-    // Room Rules
-    // ===============================================================
 
     match /rooms/{roomId} {
       
-      // Crear: El primer jugador debe ser el creador
       allow create: if isAuthenticated() && 
                       isValidRoom(request.resource.data) &&
                       request.resource.data.players[0].uid == request.auth.uid;
       
-      // Leer: Si está esperando o si eres parte de la partida
       allow read: if isAuthenticated() && (resource.data.status == 'waiting' || isPlayer(resource.data));
       
-      // Actualizar: Unirse o empezar partida
       allow update: if isAuthenticated() && (
-                      // Caso 1: Unirse (Pasa de 1 a 2 jugadores)
                       (resource.data.status == 'waiting' && 
-                       resource.data.players.size() == 1 && 
-                       request.resource.data.players.size() == 2) ||
-                      
-                      // Caso 2: Jugador existente (Dealer inicia o actualiza)
-                      isPlayer(resource.data)
+                       resource.data.players.size() < resource.data.maxPlayers &&
+                       request.resource.data.players.size() <= resource.data.maxPlayers &&
+                       request.resource.data.players.size() <= 4) ||
+                       isPlayer(resource.data)
                     );
 
-      // ===============================================================
-      // Hands Sub-collection
-      // ===============================================================
-      
       match /hands/{userId} {
-        // Permitimos leer si es el dueño o si es un jugador de la sala (para ver cartas jugadas/envido)
         allow read: if isAuthenticated() && (
           request.auth.uid == userId || 
           (
@@ -66,7 +49,6 @@ service cloud.firestore {
           )
         );
         
-        // Permitimos escribir si es el dueño o si el que escribe es jugador de la sala (necesario para CPU)
         allow write: if isAuthenticated() && (
           request.auth.uid == userId || 
           (
